@@ -850,11 +850,73 @@ def run_gsheet_oms_validation(df_pending, df_oms, df_contacts=None):
         df_pending[target_sla_col] = df_pending[target_sla_col].fillna("#N/A")
         df_pending[target_sla_col] = df_pending[target_sla_col].apply(extract_date)
 
+    # Ensure df_pending has Order Number, Order Date, courier_name, tracking_number
+    if not df_pending.empty:
+        # Find order number column
+        pend_num_col_find = _find_column(df_pending, ["order_number", "Order Number", "Order_No", "Correct Order Number", "order_no"])
+        if pend_num_col_find and pend_num_col_find in df_pending.columns:
+            df_pending["Order Number"] = df_pending[pend_num_col_find].astype(str)
+        else:
+            df_pending["Order Number"] = df_pending[pend_id_col].astype(str)
+            
+        # Find order date column
+        pend_date_col_find = _find_column(df_pending, ["ordered_date", "order_date", "created_at", "created", "timeOrderCreated", "Order Date", "Order Date and Time", "Created time", "Created Time", "createdTime"])
+        if pend_date_col_find and pend_date_col_find in df_pending.columns:
+            df_pending["Order Date"] = df_pending[pend_date_col_find].astype(str)
+        else:
+            df_pending["Order Date"] = "Unknown"
+
+        # Find courier name column
+        pend_courier_col_find = _find_column(df_pending, ["courier_name", "Courier Name", "courier", "Courier", "shipping_provider", "Shipping Provider", "Shipping Option", "carrier", "Carrier", "Shipping Method", "shipping_method"])
+        if pend_courier_col_find and pend_courier_col_find in df_pending.columns:
+            df_pending["courier_name"] = df_pending[pend_courier_col_find].astype(str)
+        else:
+            df_pending["courier_name"] = ""
+
+        # Find tracking number column
+        pend_tracking_col_find = _find_column(df_pending, ["tracking_number", "Tracking Number", "tracking_no", "Tracking No", "tracking_code", "Tracking Code", "trackingNo", "waybill", "Waybill Number", "Tracking Number*", "trackingCode"])
+        if pend_tracking_col_find and pend_tracking_col_find in df_pending.columns:
+            df_pending["tracking_number"] = df_pending[pend_tracking_col_find].astype(str)
+        else:
+            df_pending["tracking_number"] = ""
+
     df_discrepancies = pd.DataFrame(discrepancies) if discrepancies else pd.DataFrame(columns=[
         "Order ID", "Nickname", "Seller SKU", "Validation Result", "TC Order Status", "TC Item Status", "OMS Order Status", "OMS Line Status", "Details"
     ])
     if not df_discrepancies.empty and "SKU" in df_discrepancies.columns:
         df_discrepancies = df_discrepancies.rename(columns={"SKU": "Seller SKU"})
+
+    # Enrich df_discrepancies with Order Number, Order Date, courier_name, tracking_number from df_pending
+    if not df_discrepancies.empty and not df_pending.empty:
+        id_to_num = dict(zip(df_pending[pend_id_col].astype(str), df_pending["Order Number"].astype(str)))
+        id_to_date = dict(zip(df_pending[pend_id_col].astype(str), df_pending["Order Date"].astype(str)))
+        id_to_courier = dict(zip(df_pending[pend_id_col].astype(str), df_pending["courier_name"].astype(str)))
+        id_to_tracking = dict(zip(df_pending[pend_id_col].astype(str), df_pending["tracking_number"].astype(str)))
+        
+        df_discrepancies["Order Number"] = df_discrepancies["Order ID"].astype(str).map(id_to_num)
+        df_discrepancies["Order Date"] = df_discrepancies["Order ID"].astype(str).map(id_to_date)
+        df_discrepancies["courier_name"] = df_discrepancies["Order ID"].astype(str).map(id_to_courier)
+        df_discrepancies["tracking_number"] = df_discrepancies["Order ID"].astype(str).map(id_to_tracking)
+        
+        # Fallbacks
+        df_discrepancies["Order Number"] = df_discrepancies["Order Number"].fillna(df_discrepancies["Order ID"])
+        df_discrepancies["Order Date"] = df_discrepancies["Order Date"].fillna("Unknown")
+        df_discrepancies["courier_name"] = df_discrepancies["courier_name"].fillna("")
+        df_discrepancies["tracking_number"] = df_discrepancies["tracking_number"].fillna("")
+        
+        # Fallback to OMS carrier if courier_name is empty
+        oms_courier_col = _find_column(df_oms, ["carrier", "Carrier", "courier_name", "Courier Name"])
+        if oms_courier_col and not df_oms.empty:
+            id_to_oms_courier = dict(zip(df_oms[oms_id_col].astype(str), df_oms[oms_courier_col].astype(str)))
+            for idx_disc, r_disc in df_discrepancies.iterrows():
+                if not r_disc.get("courier_name"):
+                    oid_disc = str(r_disc.get("Order ID", ""))
+                    if oid_disc in id_to_oms_courier:
+                        df_discrepancies.at[idx_disc, "courier_name"] = id_to_oms_courier[oid_disc]
+        
+        # Reorder columns to put Order Number, Order Date, courier_name, tracking_number right after Order ID
+        desired_cols = ["Order ID", "Order Number", "Order Date", "courier_name", "tracking_number"] + [c for c in df_discrepancies.columns if c not in ["Order ID", "Order Number", "Order Date", "courier_name", "tracking_number"]]
+        df_discrepancies = df_discrepancies[[c for c in desired_cols if c in df_discrepancies.columns]]
 
     # Seller grouping
     seller_email_map = _build_seller_email_map(df_contacts)
@@ -1136,7 +1198,9 @@ def load_and_preprocess_marketplace_files(marketplace_files):
             
         sku_col = _find_column(sub_df, ["custom_sku", "customSku", "sku", "item_sku", "SKU", "sellerSku", "seller SKU", "Zalora SKU"])
         date_col = _find_column(sub_df, ["date", "created", "order_date", "Order Date", "timeOrderCreated", "Created at"])
-        
+        courier_col = _find_column(sub_df, ["courier_name", "Courier Name", "courier", "Courier", "shipping_provider", "Shipping Provider", "Shipping Option", "carrier", "Carrier", "Shipping Method", "shipping_method"])
+        tracking_col = _find_column(sub_df, ["tracking_number", "Tracking Number", "tracking_no", "Tracking No", "tracking_code", "Tracking Code", "trackingNo", "waybill", "Waybill Number", "Tracking Number*", "trackingCode", "CD Tracking Code", "Tracking Code FM"])
+
         clean_rows = []
         for idx, row in sub_df.iterrows():
             raw_id = str(row.get(ord_id_col, "")).strip()
@@ -1149,12 +1213,16 @@ def load_and_preprocess_marketplace_files(marketplace_files):
             clean_id = _clean_order_id(raw_id)
             sku_val = str(row.get(sku_col, "")).strip() if sku_col else ""
             date_val = extract_date(row.get(date_col, "")) if date_col else "Unknown"
+            courier_val = str(row.get(courier_col, "")).strip() if courier_col else ""
+            tracking_val = str(row.get(tracking_col, "")).strip() if tracking_col else ""
             
             clean_rows.append({
                 "Correct Order Number": clean_id,
                 "Store Name": channel_detected,
                 "SKU": sku_val,
                 "Order Date": date_val,
+                "courier_name": courier_val,
+                "tracking_number": tracking_val,
                 "Final Remarks": "",
                 "OMS Order Status": "N/A",
                 "SLA Source": "Marketplace Report",
@@ -1338,7 +1406,7 @@ def run_tc_oms_reconciliation(df_tc, df_marketplace, df_oms):
     import re
     # Find column names in TC
     tc_id_col = _find_column(df_tc, ["order_number", "order_id", "Order ID", "Order No", "Order Number", "Order_No", "Order_ID"])
-    tc_num_col = _find_column(df_tc, ["order_no", "Order No", "Order Number", "Order Number / Reference No"])
+    tc_num_col = _find_column(df_tc, ["order_number", "order_no", "Order No", "Order Number", "Order Number / Reference No"])
     tc_status_col = _find_column(df_tc, ["order_status", "TC Status", "Order Status", "Status", "TC_Status"])
     tc_item_status_col = _find_column(df_tc, ["order_item_status", "item_status", "line_item_status", "order_status"])
     tc_store_col = _find_column(df_tc, ["nickname", "Store Name", "Store", "Seller", "Seller Name", "Marketplace", "Shop Name", "Shop"])
@@ -1347,6 +1415,9 @@ def run_tc_oms_reconciliation(df_tc, df_marketplace, df_oms):
     
     tc_pay_status_col = _find_column(df_tc, ["payment_status", "Payment Status", "Payment_Status", "PaymentStatus", "Payment"])
     tc_pay_method_col = _find_column(df_tc, ["payment_methods", "Payment Method", "Payment_Method", "PaymentMethod", "Payment Type"])
+    tc_date_col = _find_column(df_tc, ["ordered_date", "order_date", "created_at", "created", "timeOrderCreated", "Order Date", "Order Date and Time", "Created time", "Created Time", "createdTime"])
+    tc_courier_col = _find_column(df_tc, ["courier_name", "Courier Name", "courier", "Courier", "shipping_provider", "Shipping Provider", "Shipping Option", "carrier", "Carrier", "Shipping Method", "shipping_method"])
+    tc_tracking_col = _find_column(df_tc, ["tracking_number", "Tracking Number", "tracking_no", "Tracking No", "tracking_code", "Tracking Code", "trackingNo", "waybill", "Waybill Number", "Tracking Number*", "trackingCode"])
 
     # Find column names in OMS
     oms_id_col = _find_column(df_oms, ["order_no", "order_id", "order_number", "Order ID", "Order No", "Order Number", "Order_No", "Order_ID"])
@@ -1452,10 +1523,16 @@ def run_tc_oms_reconciliation(df_tc, df_marketplace, df_oms):
                 continue
             mp_store = str(mp_row.get("Store Name", "")).strip()
             mp_sku = str(mp_row.get("SKU", "")).strip()
+            mp_courier_val = str(mp_row.get("courier_name", "")).strip()
+            mp_tracking_val = str(mp_row.get("tracking_number", "")).strip()
             
             if mp_oid not in tc_ids:
                 flow_disc = {
                     "Order ID": mp_oid,
+                    "Order Number": mp_oid,
+                    "Order Date": str(mp_row.get("Order Date", "Unknown")),
+                    "courier_name": mp_courier_val,
+                    "tracking_number": mp_tracking_val,
                     "Store Name": mp_store,
                     "Seller SKU": mp_sku,
                     "TC Order Status": "Missing in TC",
@@ -1714,8 +1791,27 @@ def run_tc_oms_reconciliation(df_tc, df_marketplace, df_oms):
         if is_pushed:
             pushed_count += 1
 
+        tc_num_val = _clean_str(row.get(tc_num_col, "")) if tc_num_col else oid_str
+        if not tc_num_val:
+            tc_num_val = oid_str
+        tc_date_val = _clean_str(row.get(tc_date_col, "")) if tc_date_col else "Unknown"
+        tc_courier_val = _clean_str(row.get(tc_courier_col, "")) if tc_courier_col else ""
+        tc_tracking_val = _clean_str(row.get(tc_tracking_col, "")) if tc_tracking_col else ""
+
+        # fallback to OMS carrier if TC courier is empty
+        if not tc_courier_val and oms_stat and oms_stat != "Not in OMS":
+            oms_courier_col = _find_column(df_oms, ["carrier", "Carrier", "courier_name", "Courier Name"])
+            if oms_courier_col:
+                oms_match_rows = df_oms[df_oms[oms_id_col].astype(str).apply(_clean_order_id) == oid_str]
+                if not oms_match_rows.empty:
+                    tc_courier_val = _clean_str(oms_match_rows.iloc[0].get(oms_courier_col, ""))
+
         row_data = {
             "Order ID": oid_str,
+            "Order Number": tc_num_val,
+            "Order Date": tc_date_val,
+            "courier_name": tc_courier_val,
+            "tracking_number": tc_tracking_val,
             "Store Name": store_val,
             "Seller SKU": sku_val,
             "TC Order Status": tc_stat,
@@ -1739,12 +1835,19 @@ def run_tc_oms_reconciliation(df_tc, df_marketplace, df_oms):
             discrepancy_rows.append(row_data)
 
     main_df = pd.DataFrame(main_rows) if main_rows else pd.DataFrame(columns=[
-        "Order ID", "Store Name", "Seller SKU", "TC Order Status", "TC Item Status",
+        "Order ID", "Order Number", "Order Date", "courier_name", "tracking_number", "Store Name", "Seller SKU", "TC Order Status", "TC Item Status",
         "Payment Status", "Payment Method", "SLA Date", "SLA", "sla_status",
         "OMS Order Status", "Validation Result", "Details", "Final Remarks"
     ])
     
     df_discrepancies = pd.DataFrame(discrepancy_rows) if discrepancy_rows else pd.DataFrame(columns=main_df.columns)
+
+    if not main_df.empty:
+        desired_cols = ["Order ID", "Order Number", "Order Date", "courier_name", "tracking_number"] + [c for c in main_df.columns if c not in ["Order ID", "Order Number", "Order Date", "courier_name", "tracking_number"]]
+        main_df = main_df[[c for c in desired_cols if c in main_df.columns]]
+    if not df_discrepancies.empty:
+        desired_cols = ["Order ID", "Order Number", "Order Date", "courier_name", "tracking_number"] + [c for c in df_discrepancies.columns if c not in ["Order ID", "Order Number", "Order Date", "courier_name", "tracking_number"]]
+        df_discrepancies = df_discrepancies[[c for c in desired_cols if c in df_discrepancies.columns]]
     
     target_store_col = "Store Name"
     total_discrepancies = len(df_discrepancies)
@@ -2636,11 +2739,70 @@ def run_standard_validation(df_pending, df_tc, df_oms, df_contacts):
     # Append missing in TC discrepancies
     filtered_discrepancies.extend(missing_tc_discrepancies)
 
+    # Ensure df_pending has Order Number, Order Date, courier_name, tracking_number
+    if not df_pending.empty:
+        pend_id_col = _find_column(df_pending, ["order_id", "order_number", "Order ID", "Order No", "Order Number", "Order_No", "Order_ID"])
+        pend_num_col_find = _find_column(df_pending, ["order_number", "Order Number", "Order_No", "Correct Order Number", "order_no"])
+        if pend_num_col_find and pend_num_col_find in df_pending.columns:
+            df_pending["Order Number"] = df_pending[pend_num_col_find].astype(str)
+        elif pend_id_col:
+            df_pending["Order Number"] = df_pending[pend_id_col].astype(str)
+            
+        pend_date_col_find = _find_column(df_pending, ["ordered_date", "order_date", "created_at", "created", "timeOrderCreated", "Order Date", "Order Date and Time", "Created time", "Created Time", "createdTime"])
+        if pend_date_col_find and pend_date_col_find in df_pending.columns:
+            df_pending["Order Date"] = df_pending[pend_date_col_find].astype(str)
+        else:
+            df_pending["Order Date"] = "Unknown"
+
+        pend_courier_col_find = _find_column(df_pending, ["courier_name", "Courier Name", "courier", "Courier", "shipping_provider", "Shipping Provider", "Shipping Option", "carrier", "Carrier", "Shipping Method", "shipping_method"])
+        if pend_courier_col_find and pend_courier_col_find in df_pending.columns:
+            df_pending["courier_name"] = df_pending[pend_courier_col_find].astype(str)
+        else:
+            df_pending["courier_name"] = ""
+
+        pend_tracking_col_find = _find_column(df_pending, ["tracking_number", "Tracking Number", "tracking_no", "Tracking No", "tracking_code", "Tracking Code", "trackingNo", "waybill", "Waybill Number", "Tracking Number*", "trackingCode"])
+        if pend_tracking_col_find and pend_tracking_col_find in df_pending.columns:
+            df_pending["tracking_number"] = df_pending[pend_tracking_col_find].astype(str)
+        else:
+            df_pending["tracking_number"] = ""
+
     df_discrepancies = pd.DataFrame(filtered_discrepancies) if filtered_discrepancies else pd.DataFrame(columns=[
         "Order ID", "Nickname", "Seller SKU", "Validation Result", "TC Order Status", "TC Item Status", "OMS Order Status", "OMS Line Status", "Details"
     ])
     if not df_discrepancies.empty and "SKU" in df_discrepancies.columns:
         df_discrepancies = df_discrepancies.rename(columns={"SKU": "Seller SKU"})
+
+    # Enrich df_discrepancies with Order Number, Order Date, courier_name, tracking_number from df_pending
+    if not df_discrepancies.empty and not df_pending.empty:
+        id_to_num = dict(zip(df_pending[pend_id_col].astype(str), df_pending["Order Number"].astype(str)))
+        id_to_date = dict(zip(df_pending[pend_id_col].astype(str), df_pending["Order Date"].astype(str)))
+        id_to_courier = dict(zip(df_pending[pend_id_col].astype(str), df_pending["courier_name"].astype(str)))
+        id_to_tracking = dict(zip(df_pending[pend_id_col].astype(str), df_pending["tracking_number"].astype(str)))
+        
+        df_discrepancies["Order Number"] = df_discrepancies["Order ID"].astype(str).map(id_to_num)
+        df_discrepancies["Order Date"] = df_discrepancies["Order ID"].astype(str).map(id_to_date)
+        df_discrepancies["courier_name"] = df_discrepancies["Order ID"].astype(str).map(id_to_courier)
+        df_discrepancies["tracking_number"] = df_discrepancies["Order ID"].astype(str).map(id_to_tracking)
+        
+        # Fallbacks
+        df_discrepancies["Order Number"] = df_discrepancies["Order Number"].fillna(df_discrepancies["Order ID"])
+        df_discrepancies["Order Date"] = df_discrepancies["Order Date"].fillna("Unknown")
+        df_discrepancies["courier_name"] = df_discrepancies["courier_name"].fillna("")
+        df_discrepancies["tracking_number"] = df_discrepancies["tracking_number"].fillna("")
+        
+        # Fallback to OMS carrier if courier_name is empty
+        oms_courier_col = _find_column(df_oms, ["carrier", "Carrier", "courier_name", "Courier Name"])
+        if oms_courier_col and not df_oms.empty:
+            id_to_oms_courier = dict(zip(df_oms[oms_id_col].astype(str), df_oms[oms_courier_col].astype(str)))
+            for idx_disc, r_disc in df_discrepancies.iterrows():
+                if not r_disc.get("courier_name"):
+                    oid_disc = str(r_disc.get("Order ID", ""))
+                    if oid_disc in id_to_oms_courier:
+                        df_discrepancies.at[idx_disc, "courier_name"] = id_to_oms_courier[oid_disc]
+        
+        # Reorder columns to put Order Number, Order Date, courier_name, tracking_number right after Order ID
+        desired_cols = ["Order ID", "Order Number", "Order Date", "courier_name", "tracking_number"] + [c for c in df_discrepancies.columns if c not in ["Order ID", "Order Number", "Order Date", "courier_name", "tracking_number"]]
+        df_discrepancies = df_discrepancies[[c for c in desired_cols if c in df_discrepancies.columns]]
 
     # == 5. Seller Contact Map & Grouping =====================================
     seller_groups = {}
