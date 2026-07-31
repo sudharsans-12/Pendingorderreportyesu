@@ -540,7 +540,7 @@ else:
                         "cc": "josegabriel.mendoza@puma.com, am-ged-puma-graas@graas.ai, sophia.gaboy.ext@puma.com, puma-ecops@graas.ai, sonal.aggarwal@puma.com"
                     },
                     "PH": {
-                        "to": "julianrose.ilagan@ph.zalora.com, sharon.chua@puma.com, sophia.gaboy.ext@puma.com, josegabriel.mendoza@puma.com",
+                        "to": "sharon.chua@puma.com, sophia.gaboy.ext@puma.com, josegabriel.mendoza@puma.com",
                         "cc": "sonal.aggarwal@puma.com, puma-ecops@graas.ai, kayla.zhang@puma.com, am-ged-puma-graas@graas.ai"
                     },
                 }
